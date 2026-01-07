@@ -1,4 +1,0 @@
-*.pt
-*.json
-__pycache__/
-*.env
