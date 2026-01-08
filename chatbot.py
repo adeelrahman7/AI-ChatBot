@@ -36,13 +36,6 @@ def bag_of_words(tokenized_sentence, all_words):
             bag[idx] = 1.0
     return bag
 
-# ---------------- LOAD DATA ----------------
-with open("intents.json") as f:
-    data = json.load(f)
-
-# ---------------- LOAD OR TRAIN ----------------
-# Sentence embedding model
-embedder = SentenceTransformer('all-MiniLM-L6-v2')
 
 # sentences = []
 # sentence_tags = []
@@ -55,45 +48,46 @@ embedder = SentenceTransformer('all-MiniLM-L6-v2')
 
 # sentence_embeddings = embedder.encode(sentences, convert_to_tensor=True)
 
+def loading_embeddings(data, embedder):
+    if os.path.exists(EMBEDDINGS_PATH) and os.path.exists(META_PATH):
+        # checkpoint = torch.load(DATA_PATH)
+        # all_words = checkpoint["all_words"]
+        # tags = checkpoint["tags"]
 
-if os.path.exists(EMBEDDINGS_PATH) and os.path.exists(META_PATH):
-    # checkpoint = torch.load(DATA_PATH)
-    # all_words = checkpoint["all_words"]
-    # tags = checkpoint["tags"]
+        # model = NeuralNet(len(all_words), 8, len(tags))
+        # model.load_state_dict(torch.load(MODEL_PATH))
+        # model.eval()
+        
+        with open(META_PATH) as f:
+            meta = json.load(f)
+            sentences = meta["sentences"]
+            sentence_tags = meta["sentence_tags"]
 
-    # model = NeuralNet(len(all_words), 8, len(tags))
-    # model.load_state_dict(torch.load(MODEL_PATH))
-    # model.eval()
-    
-    with open(META_PATH) as f:
-        meta = json.load(f)
-        sentences = meta["sentences"]
-        sentence_tags = meta["sentence_tags"]
+        print("✅ Loaded pre-trained model!")
 
-    print("✅ Loaded pre-trained model!")
+    else:
+        print("⚠️ Training new model...")
+        
+        sentences = []
+        sentence_tags = []
 
-else:
-    print("⚠️ Training new model...")
-    
-    sentences = []
-    sentence_tags = []
+        for intent in data["intents"]:
+            tag = intent["tag"]
+            for pattern in intent["patterns"]:
+                sentences.append(pattern)
+                sentence_tags.append(tag)
 
-    for intent in data["intents"]:
-        tag = intent["tag"]
-        for pattern in intent["patterns"]:
-            sentences.append(pattern)
-            sentence_tags.append(tag)
-
-sentence_embeddings = embedder.encode(sentences, convert_to_tensor=True)   
-torch.save(sentence_embeddings, EMBEDDINGS_PATH)
-    
-with open(META_PATH, 'w') as f:
-    json.dump({
-        "sentences": sentences,
-        "sentence_tags": sentence_tags
-    }, f)   
-    
-    print("💾 Model trained and saved!")
+    sentence_embeddings = embedder.encode(sentences, convert_to_tensor=True)   
+    torch.save(sentence_embeddings, EMBEDDINGS_PATH)
+        
+    with open(META_PATH, 'w') as f:
+        json.dump({
+            "sentences": sentences,
+            "sentence_tags": sentence_tags
+        }, f)   
+        
+        print("💾 Embeddings and saved!")
+        return sentence_embeddings, sentences, sentence_tags
 
 #     all_words = []
 #     tags = []
@@ -141,15 +135,44 @@ with open(META_PATH, 'w') as f:
 
 #print("💾 Model trained and saved!")
 
-# ---------------- FAISS ----------------
-embedding_dim = sentence_embeddings.shape[1]
+# ---------------- FAISS Index Builder ----------------
+def loading_faiss_index(sentence_embeddings):
+    embeddings = sentence_embeddings.cpu().numpy().astype('float32')
+    faiss.normalize_L2(embeddings)
+    dim = embeddings.shape[1]
+    index = faiss.IndexFlatIP(dim)
+    index.add(embeddings)
+    return index
 
-faiss_embeddings = sentence_embeddings.cpu().numpy().astype('float32')
-faiss.normalize_L2(faiss_embeddings)
+def predict(sentence, embedder, index, sentence_tags, data, threshold=0.60):
+    # PREDICTION WITH SENTENCE EMBEDDINGS
+    user_embedding = embedder.encode(sentence)
+    user_embedding = np.array([user_embedding]).astype('float32')
+    faiss.normalize_L2(user_embedding)
+    
+    scores, indices = index.search(user_embedding, k=1)
+    confidence = float(scores[0][0])
+    best_idx = int(indices[0][0])
+    predicted_tag = sentence_tags[best_idx]
+    
+    if confidence < 0.60:
+        predicted_tag = "unknown"
+        
+    # RESPOND
+    for intent in data["intents"]:
+        if intent["tag"] == predicted_tag:
+            return random.choice(intent["responses"]), confidence
+            
+    return "I'm not sure I understand.", confidence
 
-index = faiss.IndexFlatIP(embedding_dim)
-index.add(faiss_embeddings)
+# ---------------- LOAD/TRAIN DATA ----------------
+with open("intents.json") as f:
+    data = json.load(f)
 
+# Sentence embedding model
+embedder = SentenceTransformer('all-MiniLM-L6-v2')
+sentence_embeddings, sentences, sentence_tags = loading_embeddings(data, embedder)
+index = loading_faiss_index(sentence_embeddings)
 
 # ---------------- CHAT LOOP ----------------
 print("\n🤖 Chatbot is ready! Type 'bye' to exit.\n")
@@ -158,17 +181,11 @@ while True:
     sentence = input("You: ")
     if sentence.lower() == "bye":
         break
+    
+    response, confidence = predict(sentence, embedder, index, sentence_tags, data)
+    print(f"Bot: {response} (Confidence: {confidence:.2f})")
 
-    # PREDICTION WITH SENTENCE EMBEDDINGS
-    user_embedding = embedder.encode(sentence)
-    user_embedding = np.array([user_embedding]).astype('float32')
-    faiss.normalize_L2(user_embedding)
-    
-    scores, indices = index.search(user_embedding, k=1)
-    
-    confidence = scores[0][0]
-    best_idx = indices[0][0]
-    predicted_tag = sentence_tags[best_idx]
+
     
     # scores = cosine_similarity(user_embedding.unsqueeze(0), sentence_embeddings)
     # best_score, best_idx = torch.max(scores, dim=0)
@@ -189,14 +206,5 @@ while True:
     # confidence = confidence.item()
     # predicted_tag = tags[predicted.item()]
 
-    print(f"🔍 Confidence: {confidence:.2f}")
-
-    if confidence < 0.60:
-        predicted_tag = "unknown"
-        
-    # RESPOND
-    for intent in data["intents"]:
-        if intent["tag"] == predicted_tag:
-            print("Bot:", random.choice(intent["responses"]))
-            break   
+    #print(f"🔍 Confidence: {confidence:.2f}")
         
