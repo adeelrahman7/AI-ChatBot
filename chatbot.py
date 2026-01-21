@@ -8,55 +8,20 @@ import os
 import faiss
 from nltk.tokenize import word_tokenize
 from sentence_transformers import SentenceTransformer
-from torch.nn.functional import cosine_similarity
 
-# ---------------- NLTK ----------------
-nltk.download("punkt")
 
 # ---------------- PATHS ----------------
 EMBEDDINGS_PATH = "embeddings.pt"
 META_PATH = "embeddings_meta.json"
 
-# ---------------- MODEL ----------------
-class NeuralNet(nn.Module):
-    def __init__(self, input_size, hidden_size, num_classes):
-        super().__init__()
-        self.l1 = nn.Linear(input_size, hidden_size)
-        self.l2 = nn.Linear(hidden_size, num_classes)
+with open ("intents.json") as f:
+    data = json.load(f)
+    
+embedder = SentenceTransformer('all-MiniLM-L6-v2')
 
-    def forward(self, x):
-        x = torch.relu(self.l1(x))
-        return self.l2(x)
-
-# ---------------- UTIL ----------------
-def bag_of_words(tokenized_sentence, all_words):
-    bag = np.zeros(len(all_words), dtype=np.float32)
-    for idx, w in enumerate(all_words):
-        if w in tokenized_sentence:
-            bag[idx] = 1.0
-    return bag
-
-
-# sentences = []
-# sentence_tags = []
-
-# for intent in data["intents"]:
-#     tag = intent["tag"]
-#     for pattern in intent["patterns"]:
-#         sentences.append(pattern)
-#         sentence_tags.append(tag)
-
-# sentence_embeddings = embedder.encode(sentences, convert_to_tensor=True)
-
-def loading_embeddings(data, embedder):
+def loading_embeddings():
     if os.path.exists(EMBEDDINGS_PATH) and os.path.exists(META_PATH):
-        # checkpoint = torch.load(DATA_PATH)
-        # all_words = checkpoint["all_words"]
-        # tags = checkpoint["tags"]
-
-        # model = NeuralNet(len(all_words), 8, len(tags))
-        # model.load_state_dict(torch.load(MODEL_PATH))
-        # model.eval()
+        sentence_embeddings = torch.load(EMBEDDINGS_PATH)
         
         with open(META_PATH) as f:
             meta = json.load(f)
@@ -77,63 +42,20 @@ def loading_embeddings(data, embedder):
                 sentences.append(pattern)
                 sentence_tags.append(tag)
 
-    sentence_embeddings = embedder.encode(sentences, convert_to_tensor=True)   
-    torch.save(sentence_embeddings, EMBEDDINGS_PATH)
+        sentence_embeddings = embedder.encode(sentences, convert_to_tensor=True)   
+        torch.save(sentence_embeddings, EMBEDDINGS_PATH)
         
-    with open(META_PATH, 'w') as f:
-        json.dump({
-            "sentences": sentences,
-            "sentence_tags": sentence_tags
-        }, f)   
+        with open(META_PATH, 'w') as f:
+            json.dump({
+                "sentences": sentences,
+                "sentence_tags": sentence_tags
+            }, f)   
         
         print("💾 Embeddings and saved!")
-        return sentence_embeddings, sentences, sentence_tags
+    return sentence_embeddings, sentences, sentence_tags
 
-#     all_words = []
-#     tags = []
-#     xy = []
+sentence_embeddings, sentences, sentence_tags = loading_embeddings()
 
-#     for intent in data["intents"]:
-#         tag = intent["tag"]
-#         tags.append(tag)
-
-#         for pattern in intent["patterns"]:
-#             words = word_tokenize(pattern.lower())
-#             all_words.extend(words)
-#             xy.append((words, tag))
-
-#     ignore_words = ["?", "!", ".", ","]
-#     all_words = sorted(set(w for w in all_words if w not in ignore_words))
-#     tags = sorted(set(tags))
-
-#     X_train = []
-#     y_train = []
-
-#     for (pattern_words, tag) in xy:
-#         bag = bag_of_words(pattern_words, all_words)
-#         X_train.append(bag)
-#         y_train.append(tags.index(tag))
-
-#     X_train = torch.from_numpy(np.array(X_train))
-#     y_train = torch.tensor(y_train)
-
-#     model = NeuralNet(len(all_words), 8, len(tags))
-
-#     criterion = nn.CrossEntropyLoss()
-#     optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
-
-#     for epoch in range(200):
-#         outputs = model(X_train)
-#         loss = criterion(outputs, y_train)
-
-#         optimizer.zero_grad()
-#         loss.backward()
-#         optimizer.step()
-
-#     torch.save(model.state_dict(), MODEL_PATH)
-#     torch.save({"all_words": all_words, "tags": tags}, DATA_PATH)
-
-#print("💾 Model trained and saved!")
 
 # ---------------- FAISS Index Builder ----------------
 def loading_faiss_index(sentence_embeddings):
@@ -144,7 +66,10 @@ def loading_faiss_index(sentence_embeddings):
     index.add(embeddings)
     return index
 
-def predict(sentence, embedder, index, sentence_tags, data, threshold=0.60):
+index = loading_faiss_index(sentence_embeddings)
+
+
+def predict(sentence, threshold=0.60):
     # PREDICTION WITH SENTENCE EMBEDDINGS
     user_embedding = embedder.encode(sentence)
     user_embedding = np.array([user_embedding]).astype('float32')
@@ -155,7 +80,7 @@ def predict(sentence, embedder, index, sentence_tags, data, threshold=0.60):
     best_idx = int(indices[0][0])
     predicted_tag = sentence_tags[best_idx]
     
-    if confidence < 0.60:
+    if confidence < threshold:
         predicted_tag = "unknown"
         
     # RESPOND
@@ -165,46 +90,3 @@ def predict(sentence, embedder, index, sentence_tags, data, threshold=0.60):
             
     return "I'm not sure I understand.", confidence
 
-# ---------------- LOAD/TRAIN DATA ----------------
-with open("intents.json") as f:
-    data = json.load(f)
-
-# Sentence embedding model
-embedder = SentenceTransformer('all-MiniLM-L6-v2')
-sentence_embeddings, sentences, sentence_tags = loading_embeddings(data, embedder)
-index = loading_faiss_index(sentence_embeddings)
-
-# ---------------- CHAT LOOP ----------------
-print("\n🤖 Chatbot is ready! Type 'bye' to exit.\n")
-
-while True:
-    sentence = input("You: ")
-    if sentence.lower() == "bye":
-        break
-    
-    response, confidence = predict(sentence, embedder, index, sentence_tags, data)
-    print(f"Bot: {response} (Confidence: {confidence:.2f})")
-
-
-    
-    # scores = cosine_similarity(user_embedding.unsqueeze(0), sentence_embeddings)
-    # best_score, best_idx = torch.max(scores, dim=0)
-    
-    # predicted_tag = sentence_tags[best_idx.item()]
-    # confidence = best_score.item()
-    
-        # PREDICTION WITHOUT SENTENCE EMBEDDINGS
-    # words = word_tokenize(sentence.lower())
-    # bag = bag_of_words(words, all_words)
-    # bag = torch.tensor(bag).unsqueeze(0)  # ADD BATCH DIMENSION
-
-    # with torch.no_grad():
-    #     output = model(bag)
-    #     probs = torch.softmax(output, dim=1)
-
-    # confidence, predicted = torch.max(probs, dim=1)
-    # confidence = confidence.item()
-    # predicted_tag = tags[predicted.item()]
-
-    #print(f"🔍 Confidence: {confidence:.2f}")
-        
