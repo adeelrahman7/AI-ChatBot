@@ -27,6 +27,8 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from fastapi.responses import JSONResponse
 from fastapi import Header, Depends
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 # adding logging for rate limiting
 import logging
@@ -116,6 +118,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# mounting static folder
+app.mount("/static", StaticFiles(directory="static"), name = "static")
+# serve index.html at root
+@app.get("/")
+def serve_frontend():
+    return FileResponse("static/index.html")
+
 
 # loading the embedder, a place to store the uploaded docs
 # and a directory for storing the uploaded files
