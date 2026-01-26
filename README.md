@@ -306,8 +306,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 👨‍💻 Author
 
 **Adeel**
-- GitHub: [@yourusername](https://github.com/yourusername)
-- Project Link: [https://github.com/yourusername/ai-study-helper](https://github.com/yourusername/ai-study-helper)
+- GitHub: [@adeelrahman7](https://github.com/adeelrahman7)
+- Project Link: [https://github.com/adeelrahman7/ai-study-helper](https://github.com/adeelrahman7/AI-ChatBot.git)
 
 ---
 
