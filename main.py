@@ -227,6 +227,99 @@ def extract_text_from_docx(file_bytes: bytes) -> str:
         text += para.text + "\n"
     return text
 
+# Method 1: 
+def parse_flashcards_by_separator(raw_cards, doc):
+    """Parse flashcards when separated by '---' """
+    cards = []
+    
+    for card_block in raw_cards:
+        card_block =  card_block.strip()
+        
+        if not card_block or "FRONT:" not in card_block or "BACK:" not in card_block:
+            continue
+        
+        front_pos = card_block.find("FRONT:")
+        back_pos = card_block.find("BACK:")
+        
+        if front_pos == -1 or back_pos == -1:
+            continue
+        
+        front = card_block[front_pos + 6:back_pos].strip()
+        back = card_block[back_pos + 5:].strip()
+        
+        if "FRONT:" in back:
+            back = back[:back.find("FRONT:")].strip()
+        
+        if front and back and len(front) > 0 and len(back) > 0:
+            cards.append({
+                "front": front,
+                "back": back,
+                "topic": doc["topics"][0] if doc["topics"] else "General"
+            })
+    return cards[:10]
+
+# Method 2:
+def parse_flashcards_by_lines(response, doc):
+    cards = []
+    lines = response.split('\n')
+
+    current_front = None
+    current_back = None
+    
+    for line in lines:
+        line = line.strip()
+        
+        if line.startswith("FRONT:"):
+            if current_front and current_back:
+                cards.append({  
+                    "front": current_front,
+                    "back": current_back,
+                    "topic": doc["topics"][0] if doc["topics"] else "General"
+                })
+            
+            current_front = line.replace("FRONT:", "").strip()
+            current_back = None
+            
+        elif line.startswith("BACK:"):
+            current_back = line.replace("BACK:", "").strip()
+        
+        elif current_back is not None and line is not line.startswith(("FRONT:", "BACK:", "---")):
+            current_back += " " + line
+            
+    if current_front and current_back:
+        cards.append({
+            "front": current_front,
+            "back": current_back,
+            "topic": doc["topics"][0] if doc["topics"] else "General"
+        })
+    
+    return cards[:10]
+
+# Method 3: 
+def parse_flashcards_aggressive(response, doc):
+    """Aggressive parsing - search for all FRONT: and BACK: occurrences"""
+    cards = []
+    
+    # Find all positions of FRONT: and BACK:
+    import re
+    
+    # Use regex to find all flashcard patterns
+    pattern = r'FRONT:\s*([^\n]+(?:\n(?!BACK:)[^\n]*)*)\s*BACK:\s*([^\n]+(?:\n(?!FRONT:)[^\n]*)*)'
+    matches = re.finditer(pattern, response, re.MULTILINE)
+    
+    for match in matches:
+        front = match.group(1).strip()
+        back = match.group(2).strip()
+        
+        if front and back and len(front) > 0 and len(back) > 0:
+            cards.append({
+                "front": front,
+                "back": back,
+                "topic": doc["topics"][0] if doc["topics"] else "General"
+            })
+    
+    return cards[:10]
+
 # Function to chunk text into smaller pieces
 # LLMs and embedding models have token limits, so we need to split large texts
 
@@ -537,38 +630,37 @@ async def generate_flashcards(request: Request, req: StudyMaterialRequest):
     
     prompt = f"""Create 10 flashcards based on the following study material.
 Format EXACTLY as:
-FRONT: [question or term]
-BACK: [answer or definition]
+FRONT: question or term
+BACK: answer or definition
 ---
-(repeat for each flashcard)
 
-Content:
+FRONT: question or term
+BACK: answer or definition
+---
+
+(repeat 10 times total)
+
+Content to create flashcards from:
 {text}
 
 Flashcards:"""
     response = generate_with_ollama(prompt)
     
+    logger.info(f"Ollama response length: {len(response)}, First 200 chars: {response[:200]}")
+    
     # parsing the response into flashcard objects
     cards = []
-    cards_texts = response.split('---')
-    for card_text in cards_texts:
-        if "FRONT:" in card_text and "BACK:" in card_text:
-            lines = card_text.strip().split('\n')
-            front = ""
-            back = ""
-            for line in lines:
-                if line.startswith("FRONT:"):
-                    front = line.replace("FRONT:", "").strip()
-                elif line.startswith("BACK:"):
-                    back = line.replace("BACK:", "").strip()
-                    
-            if front and back:
-                cards.append({
-                    "front": front,
-                    "back": back,
-                    "topic": doc["topics"][0] if doc["topics"] else "General"
-                })
-
+    
+    if '---' in response:
+        raw_cards = response.split()
+        cards = parse_flashcards_by_separator(raw_cards, doc)
+        
+    if len(cards) == 0:
+        cards = parse_flashcards_by_lines(response, doc)
+    
+    if len(cards) == 0:
+        cards = parse_flashcards_aggressive(response, doc)
+        
     logger.info(f"Flashcards generated for Document ID: {req.document_id}")
     
     return {"document_id": req.document_id,
@@ -577,7 +669,7 @@ Flashcards:"""
             "count": len(cards),
             "created_at": datetime.now().isoformat()
             }
-    
+
 # Endpoint to generate practice questions for a document
 # requests LLM to create questions, parses response, and returns structured question data
 @app.post("/generate/questions", dependencies=[Depends(verify_api_key)])
@@ -642,16 +734,6 @@ Questions:"""
             
     questions = questions[:5]  # limit to first 5 questions
     
-    # Temporary placeholder until Ollama is set up
-    # for q_text in q_texts[:5]:  # limit to first 5 questions
-    #     if "Q:" in q_text and "TYPE:" in q_text and "ANSWER:" in q_text:
-    #         questions.append({
-    #             "question": "Sample question from your document",
-    #             "type": "multiple_choice",
-    #             "options": ["A) Option 1", "B) Option 2", "C) Option 3", "D) Option 4"],
-    #             "answer": "A",
-    #             "explanation": "Based on the content provided..."
-    #         })
     logger.info(f"Questions generated for Document ID: {req.document_id}")
     return {"document_id": req.document_id,
             "material_type": "questions",
